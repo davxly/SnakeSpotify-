@@ -13,6 +13,7 @@
             font-family: 'Arial', sans-serif;
             color: white;
             touch-action: none;
+            transition: background-color 1s ease;
         }
 
         .screen {
@@ -88,6 +89,11 @@
         button:disabled {
             background: #535353;
             cursor: not-allowed;
+        }
+
+        .secondary-btn {
+            background: #535353;
+            margin-left: 10px;
         }
 
         #spotify-player {
@@ -231,6 +237,18 @@
             background: #282828;
             border-radius: 8px;
         }
+
+        .button-group {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 20px;
+        }
+
+        .button-group button {
+            margin: 0;
+            flex: 1;
+        }
     </style>
 </head>
 
@@ -269,7 +287,10 @@
         <div class="box">
             <h2 style="color: white;">¡Perdiste!</h2>
             <p id="final-score" style="font-size: 18px; color: #1db954; margin-bottom: 20px;"></p>
-            <button onclick="restartGame()">Jugar de Nuevo</button>
+            <div class="button-group">
+                <button onclick="restartGame()">Jugar de Nuevo</button>
+                <button onclick="changePlaylist()" class="secondary-btn">Cambiar Playlist</button>
+            </div>
         </div>
     </div>
 
@@ -362,6 +383,11 @@
         let isPlayerReady = false;
         let deviceId;
         let accessToken;
+
+        // Nuevas variables para las mejoras
+        let recentTracks = [];
+        let usedTracks = new Set();
+        let dominantColors = new Map();
 
         // --- FUNCIONES PKCE ---
         function generateRandomString(length) {
@@ -507,6 +533,95 @@
         // Llamar esta función al cargar la página
         handleAuthRedirect();
 
+        // --- MEJORAS: ALEATORIEDAD Y COLORES ---
+        function shuffleArray(array) {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+            return array;
+        }
+
+        function getRandomTrackId() {
+            // Si ya usamos todas las pistas, reiniciamos el conjunto
+            if (usedTracks.size >= tracks.length) {
+                usedTracks.clear();
+            }
+
+            // Filtramos las pistas no usadas recientemente
+            const availableTracks = tracks
+                .map((_, index) => index)
+                .filter(index => !recentTracks.includes(index) && !usedTracks.has(index));
+
+            let trackId;
+            if (availableTracks.length > 0) {
+                // Elegir de las pistas disponibles
+                trackId = availableTracks[Math.floor(Math.random() * availableTracks.length)];
+            } else {
+                // Si no hay disponibles, elegir cualquier pista no usada
+                const allAvailable = tracks
+                    .map((_, index) => index)
+                    .filter(index => !usedTracks.has(index));
+                trackId = allAvailable[Math.floor(Math.random() * allAvailable.length)];
+            }
+
+            // Actualizar pistas recientes y usadas
+            usedTracks.add(trackId);
+            recentTracks.push(trackId);
+            
+            // Mantener solo las últimas 3 pistas en recientes
+            if (recentTracks.length > 3) {
+                recentTracks.shift();
+            }
+
+            return trackId;
+        }
+
+        function getDominantColor(img) {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
+            canvas.width = 50;
+            canvas.height = 50;
+            
+            ctx.drawImage(img, 0, 0, 50, 50);
+            
+            const imageData = ctx.getImageData(0, 0, 50, 50).data;
+            let r = 0, g = 0, b = 0;
+            let count = 0;
+            
+            // Muestrear algunos píxeles para obtener el color promedio
+            for (let i = 0; i < imageData.length; i += 16) {
+                r += imageData[i];
+                g += imageData[i + 1];
+                b += imageData[i + 2];
+                count++;
+            }
+            
+            r = Math.floor(r / count);
+            g = Math.floor(g / count);
+            b = Math.floor(b / count);
+            
+            // Ajustar el color para que no sea demasiado claro u oscuro
+            const brightness = (r + g + b) / 3;
+            if (brightness > 200) {
+                r = Math.floor(r * 0.7);
+                g = Math.floor(g * 0.7);
+                b = Math.floor(b * 0.7);
+            } else if (brightness < 50) {
+                r = Math.min(255, r + 50);
+                g = Math.min(255, g + 50);
+                b = Math.min(255, b + 50);
+            }
+            
+            return `rgb(${r}, ${g}, ${b})`;
+        }
+
+        function updateBackgroundColor(trackId) {
+            if (dominantColors.has(trackId)) {
+                document.body.style.backgroundColor = dominantColors.get(trackId);
+            }
+        }
+
         // --- 2. CARGA DE PLAYLIST ---
         async function loadPlaylist() {
             if (!accessToken) {
@@ -546,6 +661,7 @@
                 // Procesar tracks
                 statusMsg.textContent = "Preparando canciones...";
                 tracks = [];
+                dominantColors.clear();
 
                 for (let i = 0; i < Math.min(rawTracks.length, 20); i++) {
                     const t = rawTracks[i];
@@ -558,6 +674,10 @@
                         img.onerror = resolve;
                     });
 
+                    // Calcular color dominante
+                    const dominantColor = getDominantColor(img);
+                    dominantColors.set(i, dominantColor);
+
                     tracks.push({
                         name: t.name,
                         artist: t.artists[0].name,
@@ -565,6 +685,9 @@
                         imgObj: img
                     });
                 }
+
+                // Mezclar tracks para mayor aleatoriedad
+                tracks = shuffleArray(tracks);
 
                 // Inicializar Web Playback SDK
                 statusMsg.textContent = "Inicializando reproductor...";
@@ -722,6 +845,9 @@
                 trackName.textContent = track.name;
                 trackArtist.textContent = track.artist;
                 playBtn.textContent = "⏸";
+
+                // Actualizar color de fondo
+                updateBackgroundColor(trackIndex);
             }).catch(error => {
                 console.error("Error reproduciendo track:", error);
                 playerStatus.textContent = "Error reproduciendo";
@@ -746,6 +872,7 @@
             gameUi.classList.remove('hidden');
             resize();
 
+            // Reiniciar estado del juego
             snake = [];
             prevSnake = [];
             score = 0;
@@ -754,9 +881,16 @@
             scoreEl.textContent = "Puntos: 0";
             lastUpdateTime = performance.now();
 
+            // Reiniciar seguimiento de pistas
+            recentTracks = [];
+            usedTracks.clear();
+
+            // Mezclar tracks nuevamente para mayor aleatoriedad
+            tracks = shuffleArray(tracks);
+
             const startX = Math.floor(cols / 2);
             const startY = Math.floor(rows / 2);
-            currentHeadTrackId = Math.floor(Math.random() * tracks.length);
+            currentHeadTrackId = getRandomTrackId();
 
             // Crear cuerpo inicial
             for (let i = 0; i < 3; i++) {
@@ -780,7 +914,7 @@
                 food = {
                     x: Math.floor(Math.random() * cols),
                     y: Math.floor(Math.random() * rows),
-                    trackId: Math.floor(Math.random() * tracks.length)
+                    trackId: getRandomTrackId()
                 };
                 valid = !snake.some(s => s.x === food.x && s.y === food.y);
             }
@@ -846,10 +980,18 @@
             gameOverScreen.classList.remove('hidden');
         }
 
+        function changePlaylist() {
+            gameOverScreen.classList.add('hidden');
+            loginScreen.classList.remove('hidden');
+            document.body.style.backgroundColor = "#121212";
+        }
+
         function lerp(a, b, t) { return a + (b - a) * t; }
 
         function draw(p) {
-            ctx.fillStyle = "#121212";
+            // Usar color de fondo basado en la canción actual de la cabeza
+            const headColor = dominantColors.get(snake[0].trackId) || "#121212";
+            ctx.fillStyle = headColor;
             ctx.fillRect(0, 0, canvas.width, canvas.height);
 
             // Comida
