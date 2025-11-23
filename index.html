@@ -622,6 +622,44 @@
             }
         }
 
+        // --- FUNCIÓN PARA CAMBIAR DE PLAYLIST ---
+        function changePlaylist() {
+            // Detener el juego
+            isPlaying = false;
+            
+            // Limpiar el estado del juego
+            snake = [];
+            prevSnake = [];
+            tracks = [];
+            recentTracks = [];
+            usedTracks.clear();
+            dominantColors.clear();
+            
+            // Pausar la reproducción si está activa
+            if (isPlayerReady && player) {
+                player.pause();
+            }
+            
+            // Ocultar pantallas de juego
+            gameOverScreen.classList.add('hidden');
+            spotifyPlayer.classList.add('hidden');
+            gameUi.classList.add('hidden');
+            
+            // Mostrar pantalla de login
+            loginScreen.classList.remove('hidden');
+            
+            // Restablecer el color de fondo
+            document.body.style.backgroundColor = "#121212";
+            
+            // Restablecer el botón de carga
+            loadBtn.disabled = false;
+            loadBtn.textContent = "Cargar Playlist";
+            
+            // Mostrar mensaje de estado
+            statusMsg.textContent = "Ingresa una nueva playlist de Spotify";
+            statusMsg.className = "success";
+        }
+
         // --- 2. CARGA DE PLAYLIST ---
         async function loadPlaylist() {
             if (!accessToken) {
@@ -643,6 +681,12 @@
             statusMsg.textContent = "Cargando playlist...";
 
             try {
+                // Limpiar estado anterior
+                tracks = [];
+                recentTracks = [];
+                usedTracks.clear();
+                dominantColors.clear();
+
                 // Obtener datos de la playlist
                 const plRes = await fetch(`https://api.spotify.com/v1/playlists/${pid}`, {
                     headers: {
@@ -661,7 +705,6 @@
                 // Procesar tracks
                 statusMsg.textContent = "Preparando canciones...";
                 tracks = [];
-                dominantColors.clear();
 
                 for (let i = 0; i < Math.min(rawTracks.length, 20); i++) {
                     const t = rawTracks[i];
@@ -978,12 +1021,6 @@
             finalScoreEl.textContent = `Puntuación Final: ${score}`;
             gameUi.classList.add('hidden');
             gameOverScreen.classList.remove('hidden');
-        }
-
-        function changePlaylist() {
-            gameOverScreen.classList.add('hidden');
-            loginScreen.classList.remove('hidden');
-            document.body.style.backgroundColor = "#121212";
         }
 
         function lerp(a, b, t) { return a + (b - a) * t; }
