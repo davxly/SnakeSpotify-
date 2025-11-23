@@ -243,7 +243,7 @@
 
             <div id="auth-section">
                 <p style="font-size: 12px; margin: 0 0 10px 0; color: #b3b3b5;">
-                    Para usar el Web Playback SDK necesitas autenticarte con Spotify Premium.
+                    Usando flujo PKCE seguro (estándar OAuth 2.1)
                 </p>
                 <button onclick="initAuth()" id="auth-btn">Autenticar con Spotify</button>
             </div>
@@ -363,47 +363,149 @@
         let deviceId;
         let accessToken;
 
-        // --- 1. INICIALIZACIÓN Y AUTENTICACIÓN ---
-        function initAuth() {
-            // Redirigir a la página de autorización de Spotify
-            const authUrl = `https://accounts.spotify.com/authorize?client_id=${CLIENT_ID}&response_type=token&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&scope=${SCOPES}&show_dialog=true`;
-            window.location.href = authUrl;
+        // --- FUNCIONES PKCE ---
+        function generateRandomString(length) {
+            const possible = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-._~';
+            let text = '';
+            for (let i = 0; i < length; i++) {
+                text += possible.charAt(Math.floor(Math.random() * possible.length));
+            }
+            return text;
         }
 
-        // Verificar si hay un token en la URL (después de la redirección)
-        function checkForAuthToken() {
-            const hash = window.location.hash.substring(1);
-            const params = new URLSearchParams(hash);
+        async function generateCodeChallenge(codeVerifier) {
+            const encoder = new TextEncoder();
+            const data = encoder.encode(codeVerifier);
+            const digest = await window.crypto.subtle.digest('SHA-256', data);
+            
+            return btoa(String.fromCharCode(...new Uint8Array(digest)))
+                .replace(/\+/g, '-')
+                .replace(/\//g, '_')
+                .replace(/=/g, '');
+        }
 
-            if (params.has('access_token')) {
-                accessToken = params.get('access_token');
-                localStorage.setItem('spotify_access_token', accessToken);
+        // --- AUTENTICACIÓN CON PKCE ---
+        async function initAuth() {
+            try {
+                // Generar code verifier y challenge
+                const codeVerifier = generateRandomString(128);
+                const codeChallenge = await generateCodeChallenge(codeVerifier);
+                
+                // Guardar code_verifier para usarlo después
+                localStorage.setItem('code_verifier', codeVerifier);
+                
+                // Parámetros para PKCE
+                const params = new URLSearchParams({
+                    client_id: CLIENT_ID,
+                    response_type: 'code',
+                    redirect_uri: REDIRECT_URI,
+                    scope: SCOPES,
+                    code_challenge_method: 'S256',
+                    code_challenge: codeChallenge,
+                    show_dialog: 'true'
+                });
+                
+                // Redirigir a Spotify
+                window.location.href = `https://accounts.spotify.com/authorize?${params}`;
+            } catch (error) {
+                console.error('Error en initAuth:', error);
+                statusMsg.textContent = 'Error iniciando autenticación';
+            }
+        }
 
-                // Limpiar la URL
-                window.location.hash = '';
-
-                // Actualizar UI
-                authBtn.textContent = 'Autenticado ✓';
-                authBtn.disabled = true;
-                loadBtn.disabled = false;
-                statusMsg.textContent = '¡Autenticación exitosa! Ahora carga tu playlist.';
-                statusMsg.className = 'success';
+        // --- MANEJAR LA RESPUESTA ---
+        async function handleAuthRedirect() {
+            const urlParams = new URLSearchParams(window.location.search);
+            const code = urlParams.get('code');
+            const error = urlParams.get('error');
+            
+            if (error) {
+                statusMsg.textContent = `Error: ${error}`;
+                return;
+            }
+            
+            if (code) {
+                await exchangeCodeForToken(code);
             } else {
-                // Verificar si hay un token guardado
-                const savedToken = localStorage.getItem('spotify_access_token');
-                if (savedToken) {
-                    accessToken = savedToken;
+                // Verificar si ya estamos autenticados
+                checkExistingAuth();
+            }
+        }
+
+        // --- INTERCAMBIAR CÓDIGO POR TOKEN ---
+        async function exchangeCodeForToken(code) {
+            const codeVerifier = localStorage.getItem('code_verifier');
+            
+            if (!codeVerifier) {
+                statusMsg.textContent = 'Error: No se encontró code_verifier';
+                return;
+            }
+            
+            try {
+                statusMsg.textContent = 'Obteniendo token de acceso...';
+                
+                const response = await fetch('https://accounts.spotify.com/api/token', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/x-www-form-urlencoded',
+                    },
+                    body: new URLSearchParams({
+                        client_id: CLIENT_ID,
+                        grant_type: 'authorization_code',
+                        code: code,
+                        redirect_uri: REDIRECT_URI,
+                        code_verifier: codeVerifier
+                    })
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`HTTP error! status: ${response.status}, details: ${errorText}`);
+                }
+                
+                const data = await response.json();
+                
+                if (data.access_token) {
+                    accessToken = data.access_token;
+                    localStorage.setItem('spotify_access_token', accessToken);
+                    
+                    // Limpiar el code_verifier ya que no lo necesitamos más
+                    localStorage.removeItem('code_verifier');
+                    
+                    // Limpiar la URL
+                    window.history.replaceState({}, document.title, window.location.pathname);
+                    
+                    // Actualizar UI
                     authBtn.textContent = 'Autenticado ✓';
                     authBtn.disabled = true;
                     loadBtn.disabled = false;
-                    statusMsg.textContent = 'Token recuperado. Carga tu playlist.';
+                    statusMsg.textContent = '¡Autenticación exitosa! Ahora carga tu playlist.';
                     statusMsg.className = 'success';
+                } else {
+                    throw new Error('No se recibió access_token en la respuesta');
                 }
+            } catch (error) {
+                console.error('Error exchanging token:', error);
+                statusMsg.textContent = 'Error en la autenticación. Intenta de nuevo.';
+                statusMsg.className = 'error';
+            }
+        }
+
+        // --- VERIFICAR AUTENTICACIÓN EXISTENTE ---
+        function checkExistingAuth() {
+            const savedToken = localStorage.getItem('spotify_access_token');
+            if (savedToken) {
+                accessToken = savedToken;
+                authBtn.textContent = 'Autenticado ✓';
+                authBtn.disabled = true;
+                loadBtn.disabled = false;
+                statusMsg.textContent = 'Token recuperado. Carga tu playlist.';
+                statusMsg.className = 'success';
             }
         }
 
         // Llamar esta función al cargar la página
-        checkForAuthToken();
+        handleAuthRedirect();
 
         // --- 2. CARGA DE PLAYLIST ---
         async function loadPlaylist() {
@@ -849,6 +951,4 @@
     </script>
 </body>
 
-
 </html>
-
