@@ -327,7 +327,7 @@
     <script>
         // Configuración de la aplicación
         const CLIENT_ID = '0d0cf8ff94854dfaa4de78748a783fc0';
-        const REDIRECT_URI = 'https://snakespotify.vercel.app/';
+        const REDIRECT_URI = window.location.origin + window.location.pathname; // Usar la URL actual
         const SCOPES = [
             'streaming',
             'user-read-email',
@@ -391,9 +391,11 @@
 
         // --- INICIALIZACIÓN ---
         function initializeApp() {
-            // Limpiar cualquier token almacenado para forzar autenticación
+            console.log("Inicializando aplicación...");
+            
+            // NO limpiar code_verifier aquí - esto causaba el error
+            // Solo limpiar el token de acceso para forzar nueva autenticación
             localStorage.removeItem('spotify_access_token');
-            localStorage.removeItem('code_verifier');
             
             // Limpiar el campo de playlist
             playlistInput.value = '';
@@ -445,12 +447,18 @@
         // --- AUTENTICACIÓN CON PKCE ---
         async function initAuth() {
             try {
+                console.log("Iniciando autenticación PKCE...");
+                
                 // Generar code verifier y challenge
                 const codeVerifier = generateRandomString(128);
                 const codeChallenge = await generateCodeChallenge(codeVerifier);
                 
-                // Guardar code_verifier para usarlo después
-                localStorage.setItem('code_verifier', codeVerifier);
+                console.log("Code verifier generado:", codeVerifier.substring(0, 10) + "...");
+                
+                // Guardar code_verifier en sessionStorage (más seguro para el flujo)
+                sessionStorage.setItem('spotify_code_verifier', codeVerifier);
+                // También guardar en localStorage como respaldo
+                localStorage.setItem('spotify_code_verifier', codeVerifier);
                 
                 // Parámetros para PKCE
                 const params = new URLSearchParams({
@@ -463,11 +471,12 @@
                     show_dialog: 'true'
                 });
                 
+                console.log("Redirigiendo a Spotify...");
                 // Redirigir a Spotify
                 window.location.href = `https://accounts.spotify.com/authorize?${params}`;
             } catch (error) {
                 console.error('Error en initAuth:', error);
-                statusMsg.textContent = 'Error iniciando autenticación';
+                statusMsg.textContent = 'Error iniciando autenticación: ' + error.message;
                 statusMsg.className = 'error';
             }
         }
@@ -478,25 +487,56 @@
             const code = urlParams.get('code');
             const error = urlParams.get('error');
             
+            console.log("Manejando redirección - Código:", code ? "presente" : "ausente", "Error:", error);
+            
             if (error) {
-                statusMsg.textContent = `Error: ${error}`;
+                statusMsg.textContent = `Error de autenticación: ${error}`;
                 statusMsg.className = 'error';
+                // Limpiar parámetros de la URL
+                window.history.replaceState({}, document.title, window.location.pathname);
                 return;
             }
             
             if (code) {
                 await exchangeCodeForToken(code);
+            } else {
+                // Verificar si ya tenemos un token válido (para recargas de página)
+                checkExistingAuth();
             }
-            // No verificamos autenticación existente - siempre forzamos nueva autenticación
+        }
+
+        // Verificar autenticación existente
+        function checkExistingAuth() {
+            const storedToken = localStorage.getItem('spotify_access_token');
+            if (storedToken) {
+                console.log("Token encontrado en almacenamiento");
+                accessToken = storedToken;
+                authBtn.textContent = 'Autenticado ✓';
+                authBtn.disabled = true;
+                loadBtn.disabled = false;
+                statusMsg.textContent = 'Autenticación restaurada. Puedes cargar tu playlist.';
+                statusMsg.className = 'success';
+            }
         }
 
         // --- INTERCAMBIAR CÓDIGO POR TOKEN ---
         async function exchangeCodeForToken(code) {
-            const codeVerifier = localStorage.getItem('code_verifier');
+            console.log("Intercambiando código por token...");
+            
+            // Buscar code_verifier en múltiples ubicaciones
+            let codeVerifier = sessionStorage.getItem('spotify_code_verifier') || 
+                              localStorage.getItem('spotify_code_verifier');
+            
+            console.log("Code verifier encontrado:", codeVerifier ? "SÍ" : "NO");
             
             if (!codeVerifier) {
-                statusMsg.textContent = 'Error: No se encontró code_verifier';
+                const errorMsg = 'Error: No se encontró code_verifier. El flujo de autenticación se interrumpió. Por favor, intenta de nuevo.';
+                console.error(errorMsg);
+                statusMsg.textContent = errorMsg;
                 statusMsg.className = 'error';
+                
+                // Limpiar la URL
+                window.history.replaceState({}, document.title, window.location.pathname);
                 return;
             }
             
@@ -518,19 +558,24 @@
                     })
                 });
                 
+                console.log("Respuesta del servidor:", response.status);
+                
                 if (!response.ok) {
                     const errorText = await response.text();
-                    throw new Error(`HTTP error! status: ${response.status}, details: ${errorText}`);
+                    throw new Error(`Error HTTP ${response.status}: ${errorText}`);
                 }
                 
                 const data = await response.json();
+                console.log("Token recibido exitosamente");
                 
                 if (data.access_token) {
                     accessToken = data.access_token;
-                    // NO guardamos el token en localStorage para forzar autenticación cada vez
+                    // Guardar el token para futuras sesiones
+                    localStorage.setItem('spotify_access_token', accessToken);
                     
-                    // Limpiar el code_verifier ya que no lo necesitamos más
-                    localStorage.removeItem('code_verifier');
+                    // Limpiar los code_verifier ya que no los necesitamos más
+                    sessionStorage.removeItem('spotify_code_verifier');
+                    localStorage.removeItem('spotify_code_verifier');
                     
                     // Limpiar la URL
                     window.history.replaceState({}, document.title, window.location.pathname);
@@ -546,12 +591,19 @@
                 }
             } catch (error) {
                 console.error('Error exchanging token:', error);
-                statusMsg.textContent = 'Error en la autenticación. Intenta de nuevo.';
+                statusMsg.textContent = 'Error en la autenticación: ' + error.message;
                 statusMsg.className = 'error';
+                
+                // Limpiar code_verifier en caso de error
+                sessionStorage.removeItem('spotify_code_verifier');
+                localStorage.removeItem('spotify_code_verifier');
                 
                 // Resetear botón de autenticación
                 authBtn.textContent = 'Autenticar con Spotify';
                 authBtn.disabled = false;
+                
+                // Limpiar la URL
+                window.history.replaceState({}, document.title, window.location.pathname);
             }
         }
 
@@ -676,15 +728,21 @@
             // Restablecer el color de fondo
             document.body.style.backgroundColor = "#121212";
             
-            // Forzar nueva autenticación
-            accessToken = null;
-            authBtn.textContent = 'Autenticar con Spotify';
-            authBtn.disabled = false;
-            loadBtn.disabled = true;
-            
-            // Mostrar mensaje de estado
-            statusMsg.textContent = "Por favor autentícate nuevamente para cargar una nueva playlist.";
-            statusMsg.className = "success";
+            // Mantener la autenticación actual, solo resetear el estado del juego
+            if (accessToken) {
+                authBtn.textContent = 'Autenticado ✓';
+                authBtn.disabled = true;
+                loadBtn.disabled = false;
+                statusMsg.textContent = "Carga una nueva playlist para jugar.";
+                statusMsg.className = "success";
+            } else {
+                // Si no hay token, resetear autenticación
+                authBtn.textContent = 'Autenticar con Spotify';
+                authBtn.disabled = false;
+                loadBtn.disabled = true;
+                statusMsg.textContent = "Por favor autentícate para cargar una playlist.";
+                statusMsg.className = "error";
+            }
         }
 
         // --- 2. CARGA DE PLAYLIST ---
@@ -730,12 +788,12 @@
                     }
                 });
 
-                if (!plRes.ok) throw new Error("Playlist no encontrada");
+                if (!plRes.ok) throw new Error("Playlist no encontrada o no accesible");
 
                 const data = await plRes.json();
                 const rawTracks = data.tracks.items.map(i => i.track).filter(t => t && t.album.images.length > 0);
 
-                if (rawTracks.length < 5) throw new Error("Playlist muy corta");
+                if (rawTracks.length < 5) throw new Error("Playlist muy corta (mínimo 5 canciones)");
 
                 // Procesar tracks
                 statusMsg.textContent = "Preparando canciones...";
@@ -772,7 +830,8 @@
                 initWebPlaybackSDK();
 
             } catch (e) {
-                statusMsg.textContent = e.message;
+                console.error('Error cargando playlist:', e);
+                statusMsg.textContent = 'Error: ' + e.message;
                 statusMsg.className = 'error';
                 loadBtn.disabled = false;
                 loadBtn.textContent = "Cargar Playlist";
@@ -831,6 +890,7 @@
                 statusMsg.className = 'error';
                 // Resetear autenticación
                 accessToken = null;
+                localStorage.removeItem('spotify_access_token');
                 authBtn.textContent = 'Autenticar con Spotify';
                 authBtn.disabled = false;
                 loadBtn.disabled = true;
